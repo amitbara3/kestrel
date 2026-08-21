@@ -24,43 +24,96 @@ const LINKS = Number(process.env.LINKS ?? 500);
 const DURATION = Number(process.env.DURATION ?? 15);
 const CONNECTIONS = Number(process.env.CONNECTIONS ?? 50);
 const ZIPF_S = Number(process.env.ZIPF_S ?? 1.1);
+/**
+ * Optional fixed request rate (req/s across all connections).
+ *
+ * At saturation a single-process load generator becomes the bottleneck and the
+ * latency it reports is mostly time queued in its own event loop, not time the
+ * server took — the classic coordinated-omission artifact. Driving a fixed rate
+ * below saturation measures service time instead. Use RATE for latency numbers
+ * and leave it unset for throughput numbers.
+ */
+const RATE = process.env.RATE ? Number(process.env.RATE) : undefined;
 
 function log(message) {
   process.stdout.write(`${message}\n`);
 }
 
-async function readMetrics() {
-  try {
-    const response = await fetch(`${TARGET}/metrics`);
-    if (!response.ok) return null;
-    const text = await response.text();
+/**
+ * Read the metrics, aggregating across replicas.
+ *
+ * Behind a load balancer a single scrape of /metrics reaches exactly one
+ * replica, so it reports that replica's counters — comparing them against the
+ * whole cluster's request total silently understates database load by the
+ * replica count. Every series carries an `instance` label, so scraping
+ * repeatedly and keeping the highest value seen per (series, instance) —
+ * counters are monotonic, so the highest is the latest — then summing across
+ * instances gives the cluster-wide figure.
+ */
+async function readMetrics(samples = 15) {
+  const perInstance = new Map();
 
-    const totals = { hit: 0, miss: 0, negative: 0, byTier: {}, shardQueries: 0, lookups: 0, rejections: 0 };
+  const bump = (instance, key, value) => {
+    let series = perInstance.get(instance);
+    if (series === undefined) {
+      series = new Map();
+      perInstance.set(instance, series);
+    }
+    series.set(key, Math.max(series.get(key) ?? 0, value));
+  };
+
+  let reached = 0;
+  for (let sample = 0; sample < samples; sample++) {
+    let text;
+    try {
+      const response = await fetch(`${TARGET}/metrics`);
+      if (!response.ok) continue;
+      text = await response.text();
+      reached++;
+    } catch {
+      continue;
+    }
+
     for (const line of text.split('\n')) {
       if (line.startsWith('#') || line.trim() === '') continue;
       const value = Number(line.slice(line.lastIndexOf(' ') + 1));
       if (!Number.isFinite(value)) continue;
 
+      const instance = /instance="([^"]+)"/.exec(line)?.[1] ?? 'unknown';
+
       if (line.startsWith('kestrel_cache_events_total')) {
         const tier = /tier="([^"]+)"/.exec(line)?.[1];
         const outcome = /outcome="([^"]+)"/.exec(line)?.[1];
-        if (!tier || !outcome) continue;
-        totals[outcome] = (totals[outcome] ?? 0) + value;
-        totals.byTier[tier] ??= { hit: 0, miss: 0, negative: 0 };
-        totals.byTier[tier][outcome] += value;
+        if (tier && outcome) bump(instance, `tier:${tier}:${outcome}`, value);
       } else if (line.startsWith('kestrel_shard_queries_total')) {
-        totals.shardQueries += value;
+        bump(instance, 'shardQueries', value);
         // Only lookups matter for cache effectiveness; inserts and deletes are
-        // writes that no cache is expected to absorb.
-        if (line.includes('operation="findByCode"')) totals.lookups += value;
+        // writes no cache is expected to absorb.
+        if (line.includes('operation="findByCode"')) bump(instance, 'lookups', value);
       } else if (line.startsWith('kestrel_rate_limit_rejections_total')) {
-        totals.rejections += value;
+        bump(instance, 'rejections', value);
+      } else if (line.startsWith('kestrel_redirects_total') && line.includes('outcome="ok"')) {
+        bump(instance, 'redirects', value);
       }
     }
-    return totals;
-  } catch {
-    return null;
   }
+
+  if (reached === 0) return null;
+
+  const totals = { shardQueries: 0, lookups: 0, rejections: 0, redirects: 0, byTier: {}, instances: [] };
+  for (const [instance, series] of perInstance) {
+    totals.instances.push(instance);
+    for (const [key, value] of series) {
+      if (key.startsWith('tier:')) {
+        const [, tier, outcome] = key.split(':');
+        totals.byTier[tier] ??= { hit: 0, miss: 0, negative: 0 };
+        totals.byTier[tier][outcome] += value;
+      } else {
+        totals[key] += value;
+      }
+    }
+  }
+  return totals;
 }
 
 /**
@@ -140,6 +193,7 @@ async function main() {
   log('');
   log('  Kestrel load test');
   log(`  target=${TARGET} links=${LINKS} duration=${DURATION}s connections=${CONNECTIONS} zipf-s=${ZIPF_S}`);
+  log(`  mode=${RATE !== undefined ? `fixed ${RATE} req/s (latency measurement)` : 'saturation (throughput measurement)'}`);
   log('');
 
   const codes = await seed();
@@ -160,6 +214,7 @@ async function main() {
     url: TARGET,
     connections: CONNECTIONS,
     duration: DURATION,
+    ...(RATE !== undefined ? { overallRate: RATE } : {}),
     // Do not follow the 302 — we are measuring Kestrel, not example.com.
     requests: [{ method: 'GET', path: '/', setupRequest: (request) => ({
       ...request,
@@ -199,6 +254,9 @@ async function main() {
 
     log('  Cache');
     log('  ─────────────────────────────────────────────');
+    if (after.instances.length > 1) {
+      log(`  Replicas seen     ${after.instances.length} (counters summed across them)`);
+    }
     log(`  Hit ratio         ${effectiveness}%  (requests served with no DB lookup)`);
     log(`  DB lookups        ${lookups.toLocaleString()} of ${total.toLocaleString()} requests`);
     log('  Per tier, share of the reads that reached it:');
