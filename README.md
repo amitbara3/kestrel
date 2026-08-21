@@ -8,7 +8,7 @@
 <p align="center">
   <img alt="Node" src="https://img.shields.io/badge/node-22-339933?style=flat-square&logo=node.js&logoColor=white">
   <img alt="TypeScript" src="https://img.shields.io/badge/typescript-strict-3178C6?style=flat-square&logo=typescript&logoColor=white">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-195%20passing-3FB950?style=flat-square">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-195%20local%20%C2%B7%20227%20integration-3FB950?style=flat-square">
   <img alt="Coverage" src="https://img.shields.io/badge/coverage-81%25-3FB950?style=flat-square">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-F5A524?style=flat-square">
 </p>
@@ -269,14 +269,18 @@ bench/           autocannon harness, Zipfian distribution
 ```bash
 npm test                  # 195 tests, no external services
 npm run test:coverage     # thresholds enforced: 80% statements
-npm run test:integration  # also runs the contract suites against real Redis + Postgres
+npm run test:integration  # 227 tests — adds the contract suites against real Redis + Postgres
 npm run typecheck
 ```
+
+CI runs all three, plus a Docker smoke test that boots the image, creates a link, and follows the redirect.
 
 Two things worth noting about how this is tested:
 
 - **Both driver implementations run the same contract suite.** That is what makes the in-process fallback trustworthy rather than merely present. If `MemoryCache` and `RedisCache` both pass, swapping them cannot change observable behaviour.
 - **Cache claims are measured, not asserted.** The tests wrap the store in a counting driver, so "the cache hit did not touch the database" is a counted fact — including the one proving 200 concurrent misses produce exactly one query.
+
+That integration job earned its keep immediately: it caught two bugs in `RedisCache` that the in-process run structurally cannot see — the client never completed its handshake (so every read silently reported a miss and every write was dropped), and the Lua scripts were dispatched by name through `client.call()` instead of the methods `defineCommand` attaches (so both limiters failed on every request and quietly degraded to per-replica counters). Both are in the history.
 
 ## License
 

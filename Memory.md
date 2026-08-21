@@ -2,7 +2,7 @@
 
 The handoff file. Read this first: it says where the build actually is, what was decided and why, and what is open. Update it at the end of every phase (Rules.md §9).
 
-**Last updated:** 2026-08-22 · **Status:** v1.0 complete, all 8 phases shipped · **Tests:** 195 passing, 2 skipped
+**Last updated:** 2026-08-22 · **Status:** v1.0 complete, all 8 phases shipped, CI green · **Tests:** 195 local · 227 with real Redis + Postgres
 
 ---
 
@@ -24,6 +24,11 @@ npm run bench               # load test, prints PASS/FAIL against the NFR target
 | `npm run test:coverage` | 81.71% statements, 90% branches, 94% functions — above the 80/70/80 thresholds |
 | `npm run build` | clean |
 | `npm run bench` | 16,672 req/s, p99 4 ms, 0 DB lookups, 0 errors |
+| CI — typecheck + test | green |
+| CI — contracts vs real Redis + Postgres | green, **227 passed** |
+| CI — Docker build + smoke test | green (image boots, creates a link, follows the redirect) |
+
+Repository: <https://github.com/amitbara3/kestrel>
 
 ## What exists
 
@@ -67,6 +72,12 @@ Recorded because each one is a trap worth not re-entering:
 | Dead normalisation branch in `url-safety.ts` | `url.pathname = ''` is a no-op: WHATWG `URL` forces `/` on http(s) | Branch removed; the trailing-slash normal form is now documented instead of half-attempted |
 | Double-counted cache hit ratio | Bench reported 50% with L1 disabled although **zero** requests reached the database | Redefined as `1 − lookups/requests` in bench and UI |
 | Test harness set a 50 ms flush interval | Config validation rejected it at boot (floor is 100 ms) | Harness raised to 100 ms — the validator was right |
+| **`RedisCache` never completed its handshake** | With `lazyConnect` + `enableOfflineQueue: false`, a driver built without an explicit `connect()` issued every command against a client in `wait` status. Reads returned null (a miss), writes were dropped — the cache did **nothing**, invisibly, while the service kept serving correct data | Every command path awaits a memoised connect promise (`ensureConnected`). Caught by the CI integration job |
+| **Lua scripts dispatched by name** | `client.call('kestrelSlidingWindow', …)` sent a literal unknown command. `defineCommand` attaches a *method*, it does not register a dispatchable name. Both limiters failed on every request and silently degraded to per-replica counters — still limiting, just no longer distributed | Call `client.kestrelSlidingWindow(…)` via a declared interface on the client type. Caught by the CI integration job |
+
+The last two are the argument for the integration job existing. Neither is
+visible to the in-process contract run: `MemoryCache` has no connection to
+forget and no Lua to dispatch. Both would have shipped looking healthy.
 
 ## Known limitations (deliberate, documented)
 
@@ -97,8 +108,9 @@ Re-running against the compose stack (`TARGET=http://localhost:8080 npm run benc
 
 ## What was not done
 
-- **Compose stack never started** — Docker is not installed here. The Dockerfile, `docker-compose.yml`, and `nginx.conf` are written and reviewed but **unverified at runtime**. First thing to check on a machine with Docker.
-- **Redis and Postgres drivers are unexercised at runtime** for the same reason. They compile, are typechecked, and the CI integration job runs their contract suite against real services — but that job has not run yet either.
+- **The compose stack has never been started** — Docker is not installed on this machine. `docker-compose.yml` and `nginx.conf` are written and reviewed but **unverified at runtime**. First thing to check on a machine with Docker.
+  - The **`Dockerfile` itself is verified**: the CI build job builds the image, boots it, creates a link, and follows the redirect. What remains unverified is the multi-replica topology and the Nginx config.
+- **Redis and Postgres drivers are now verified** — the CI integration job runs both contract suites against real services and passes (227 tests). Two real bugs were found and fixed that way; see the defects table.
 - **The cross-replica rate-limit check** (Phases.md Phase 7: 100 requests against a 60/min limit across 3 replicas ⇒ exactly 60) needs the compose stack. The single-process equivalent is tested and passes.
 - **The chaos check** (kill Redis mid-load-test, assert zero 5xx) needs the compose stack. The degradation path itself is unit-tested with a failing cache driver.
 
@@ -106,7 +118,7 @@ Re-running against the compose stack (`TARGET=http://localhost:8080 npm run benc
 
 1. On a machine with Docker: `docker compose up --build`, confirm all five services healthy, create a link on one replica and resolve it on the others, then run `TARGET=http://localhost:8080 npm run bench`. Replace the README numbers with the multi-replica figures.
 2. Run the chaos check: `docker compose stop redis` mid-run, confirm zero 5xx, `docker compose start redis`, confirm the breaker closes.
-3. Push to GitHub and confirm all three CI jobs go green — the integration job is the one that has never run.
+3. ~~Push to GitHub and confirm CI goes green.~~ **Done** — all three jobs pass at <https://github.com/amitbara3/kestrel/actions>.
 4. Then consider the deferred list in `Phases.md`: consistent hashing, read replicas, Redis Cluster, OpenTelemetry.
 
 ## Conventions to follow
