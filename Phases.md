@@ -104,6 +104,8 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` complete
 
 **Exit criteria:** `docker compose up` brings all services healthy. Requests round-robin across replicas (visible via a per-replica label in `/metrics`). A link created on one replica resolves on the others.
 
+**Verified 2026-08-22:** all six containers healthy; the balancer spread 60 probes evenly across 3 replicas (20 each); a link created through the balancer resolved 30/30 with `L2=2`, proving the shared Redis tier.
+
 ---
 
 ## Phase 7 — Load testing and hardening
@@ -116,6 +118,8 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` complete
 - [x] Coverage thresholds enforced in CI
 
 **Exit criteria:** the load test reports ≥ 5,000 req/s and > 95% hit ratio; the chaos run records zero 5xx; measured numbers written into `README.md`.
+
+**Verified 2026-08-22** against the live cluster: 14,408 req/s, 0 database lookups in 288,142 requests, p99 1 ms server-side. Cross-replica limit admitted **exactly 20 of 60** writes. Chaos: **0 of 80,260** requests returned 5xx with Redis stopped, and the breaker closed unaided on recovery. Full run: `npm run verify -- --chaos` — 20 passed, 0 failed.
 
 ---
 

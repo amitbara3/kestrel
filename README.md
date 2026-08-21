@@ -38,12 +38,14 @@ For the real thing — load balancer, three replicas, Redis, Postgres:
 
 ```bash
 docker compose up --build     # http://localhost:8080
+npm run verify                # 20 checks against the live cluster
 ```
 
 ```bash
 npm test            # 195 tests, no external services needed
 npm run test:coverage
-npm run bench       # load test with a Zipfian key distribution
+npm run bench       # throughput; RATE=2000 npm run bench for latency
+npm run verify      # cluster checks; add -- --chaos to kill Redis mid-run
 ```
 
 ## Try it
@@ -159,36 +161,77 @@ Full detail, including the failure-mode table, is in [Architecture.md](Architect
 
 ## Measured results
 
-Load test, single replica, Zipfian key distribution over 500 links (`s = 1.1`), cache warmed before measuring:
+Measured against the **full compose topology** — Nginx + 3 replicas + Redis + PostgreSQL — with a Zipfian key distribution over 500 links (`s = 1.1`), cache warmed before measuring. Reproduce with `npm run bench`.
 
-| | L1 + L2 enabled | L1 disabled (L2 only) |
+### Throughput — saturation
+
+| | 3 replicas via Nginx | 1 replica, direct |
 | --- | --- | --- |
-| Requests/sec | **16,672** | **19,861** |
-| Latency p50 | 2 ms | 2 ms |
-| Latency p99 | **4 ms** | **4 ms** |
-| Latency max | 22 ms | 20 ms |
-| Requests served | 250,097 | 218,468 |
+| Requests/sec | **14,408** | 15,321 |
+| Requests served | 288,142 | 229,817 |
 | Database lookups | **0** | **0** |
-| Cache effectiveness | **100%** | **100%** |
+| Cache effectiveness | **100%** | 100% |
 | Non-3xx responses | 0 | 0 |
 | Socket errors | 0 | 0 |
 
+### Latency
+
+Measured three ways, because the first number was wrong and it matters why:
+
+| Measurement | p50 | p99 | max |
+| --- | --- | --- | --- |
+| Client, at saturation (14.4k req/s) | 11 ms | 35 ms | 60 ms |
+| Client, at a fixed 2,000 req/s | 2 ms | **8 ms** | 19 ms |
+| **Server-side** — Nginx's own log, 200,000 requests | 0.19 ms avg | **1.00 ms** | 19 ms |
+
+The saturation row is a **coordinated-omission artifact, not a system property.** A single-process load generator pushing 14,400 req/s is itself the bottleneck, so most of what it calls "latency" is time queued in its own event loop. Nginx — sitting between the generator and the app, timing every request — reports p99 of **1 ms** over the same traffic. Driving a fixed 2,000 req/s unsaturates the client and the reported p99 falls from 35 ms to 8 ms with no server change at all.
+
+`RATE=2000 npm run bench` measures latency; leaving `RATE` unset measures throughput. Using the saturation figure for both is how benchmarks end up lying.
+
+### Targets
+
 | Target | Result |
 | --- | --- |
-| NFR-1 · p99 < 25 ms | **PASS** — 4 ms |
-| NFR-2 · ≥ 5,000 req/s | **PASS** — 16,672 req/s |
-| NFR-3 · hit ratio > 95% | **PASS** — 100% |
+| NFR-1 · p99 < 25 ms | **PASS** — 1 ms server-side, 8 ms client-side at load |
+| NFR-2 · ≥ 5,000 req/s | **PASS** — 14,408 req/s across 3 replicas |
+| NFR-3 · hit ratio > 95% | **PASS** — 100%, zero database lookups in 288,142 requests |
 | Zero 5xx under load | **PASS** — 0 errors |
 
-<sub>Measured on Windows 11, Intel i7-11800H (8C/16T), 16 GB RAM, Node 22.15, `npm run bench`, 50 connections, 15 s.</sub>
+<sub>Windows 11, Intel i7-11800H (8C/16T), 16 GB RAM, Docker Engine 29.7 on WSL2 (Ubuntu 24.04), Node 22. The load generator runs in a container on the same host and the same Docker network.</sub>
 
-**Read these numbers with three caveats,** because a benchmark without them is decoration:
+**Where the time actually goes.** Sampling container CPU during a run: Nginx peaks at **120%** (more than a full core, and more than any replica it fronts), each app replica at 65–72%, and Postgres and Redis at **~4%** — the cache absorbs essentially everything, so the datastores idle. The balancer, not the application, is the busiest process in this topology.
 
-1. **The in-process drivers were used** — no Redis or PostgreSQL was installed on the measurement machine. So L1 and L2 are both in-memory here, which is why the two columns are close and why the L1-disabled run is nominally *faster* (that gap is noise, not a finding). Against real Redis, expect L2 to cost roughly 0.3–0.5 ms per hit and the gap between the columns to become real.
-2. **Zero database lookups is the honest figure but the easy case**: 500 links fit inside a 10,000-entry L1, and the run is shorter than the 30 s TTL. A working set larger than L1 is what exercises L2, and a working set larger than L2 is what exercises the shards.
-3. **Rate limiting was disabled for the throughput runs** (`RATE_LIMIT_ENABLED=false`). Left on, the limiter caps the result and you measure the limiter, not the system.
+### Cluster verification
 
-Cache effectiveness here is *requests served without a database lookup*. Summing per-tier hits and misses would double-count — one request that misses L1 and hits L2 records both, which reads as 50% when the database was never touched.
+`npm run verify` runs 20 checks against the live stack — the properties that only a real multi-replica deployment can settle:
+
+```
+1. Replicas up, balancer spreads across them   3 distinct replicas, 20 requests each
+2. Readiness reports real dependencies         postgres 4/4 shards, redis up, not degraded
+3. Link created on one replica resolves on the others   30/30, served L1=28 L2=2
+4. Rate limit is shared across replicas        exactly 20 of 60 writes admitted
+5. Shard routing agrees across replicas        880 / 903 / 903 / 878 of 3,564 rows
+6. Chaos — Redis killed mid-traffic            0 of 80,260 requests returned 5xx
+                                               20 passed, 0 failed
+```
+
+Two of those are the whole point of the project:
+
+- **"Exactly 20 of 60 writes admitted."** Three replicas, one budget. With per-process counters this would have been ~60 — the limiter would have silently been 3× looser than configured.
+- **"0 of 80,260 requests returned 5xx"** with Redis stopped. The 2,397 redirects that did get through match the degraded token-bucket model precisely — 3 replicas × (200 burst + 50/s × 12 s). The breaker then closed on its own once Redis came back.
+
+### Verified against real PostgreSQL
+
+`EXPLAIN (ANALYZE, BUFFERS)` on the live database, confirming the index plan in `Architecture.md` rather than asserting it:
+
+```
+Redirect lookup   Index Scan using links_2_code_uidx   Buffers: shared hit=2   0.049 ms
+List pagination   Index Scan using links_2_created_idx  Index Cond: ROW(created_at, id) < ROW(...)
+                  → a range scan with no Sort node, which is the point of keyset pagination
+Shard spread      877 / 897 / 899 / 870 rows — within 1.5% of even across 3,543 rows
+Redis TTLs        every limiter key carries an expiry; link TTLs observed at
+                  3239 / 3523 / 3807 / 2981 … — the ±10% jitter, visible in production
+```
 
 ## API
 
@@ -216,7 +259,7 @@ Every non-2xx response uses one envelope:
 
 | Failure | What happens | Verified by |
 | --- | --- | --- |
-| Redis down | Breaker opens; reads fall through to the shards; limits degrade to per-replica. **No 5xx.** | `tests/degradation.test.ts` |
+| Redis down | Breaker opens; reads fall through to the shards; limits degrade to per-replica. **No 5xx.** | `tests/degradation.test.ts` + live: 0 of 80,260 |
 | One shard down | Only codes hashing there fail; `/ready` reports it and returns 503 | `tests/degradation.test.ts` |
 | Database down | Cached codes still redirect; `/ready` 503s so the balancer drains the replica | `tests/degradation.test.ts` |
 | Replica killed | Balancer routes elsewhere; ≤ 1 flush interval of clicks lost | by design |
@@ -274,6 +317,8 @@ npm run typecheck
 ```
 
 CI runs all three, plus a Docker smoke test that boots the image, creates a link, and follows the redirect.
+
+Beyond that, `npm run verify` checks the 20 cluster properties against a running stack — the ones no unit test can reach, like whether three replicas actually share one rate-limit budget.
 
 Two things worth noting about how this is tested:
 
