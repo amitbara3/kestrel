@@ -32,10 +32,32 @@ export interface RedisCacheOptions {
 
 type LuaReply = [number, number, number, number, number];
 
+/**
+ * `defineCommand` attaches a *method* to the client — it does not register a
+ * command name that `client.call()` can dispatch. Declaring the shapes here
+ * keeps the call sites typed instead of casting to `any` at each one.
+ */
+interface KestrelCommands {
+  kestrelSlidingWindow(
+    key: string,
+    now: string,
+    windowMs: string,
+    limit: string,
+    member: string,
+  ): Promise<LuaReply>;
+  kestrelTokenBucket(
+    key: string,
+    now: string,
+    capacity: string,
+    refillPerSecond: string,
+    cost: string,
+  ): Promise<LuaReply>;
+}
+
 export class RedisCache implements CacheDriver {
   readonly name = 'redis';
 
-  private readonly client: Redis;
+  private readonly client: Redis & KestrelCommands;
   private readonly prefix: string;
   private readonly logger: Logger;
   private readonly breaker: CircuitBreaker;
@@ -65,7 +87,7 @@ export class RedisCache implements CacheDriver {
       connectTimeout: 3_000,
       commandTimeout: options.commandTimeoutMs ?? 1_000,
       retryStrategy: (attempt) => Math.min(attempt * 200, 5_000),
-    });
+    }) as Redis & KestrelCommands;
 
     // ioredis emits 'error' on every failed reconnect; without a listener Node
     // treats it as unhandled and exits the process.
@@ -152,14 +174,13 @@ export class RedisCache implements CacheDriver {
     const member = `${Date.now()}-${process.pid}-${this.counter++}`;
     const reply = await this.guardRequired<LuaReply>(
       async () =>
-        (await this.client.call(
-          'kestrelSlidingWindow',
+        this.client.kestrelSlidingWindow(
           this.k(`rl:sw:${key}`),
           String(Date.now()),
           String(windowMs),
           String(limit),
           member,
-        )) as LuaReply,
+        ),
       'sliding window',
     );
     return toResult(reply);
@@ -173,14 +194,13 @@ export class RedisCache implements CacheDriver {
   ): Promise<RateLimitResult> {
     const reply = await this.guardRequired<LuaReply>(
       async () =>
-        (await this.client.call(
-          'kestrelTokenBucket',
+        this.client.kestrelTokenBucket(
           this.k(`rl:tb:${key}`),
           String(Date.now()),
           String(capacity),
           String(refillPerSecond),
           String(cost),
-        )) as LuaReply,
+        ),
       'token bucket',
     );
     return toResult(reply);
