@@ -41,6 +41,7 @@ export class RedisCache implements CacheDriver {
   private readonly breaker: CircuitBreaker;
   private counter = 0;
   private closed = false;
+  private connecting: Promise<void> | undefined;
 
   constructor(options: RedisCacheOptions) {
     this.prefix = options.keyPrefix;
@@ -90,8 +91,38 @@ export class RedisCache implements CacheDriver {
     return this.breaker.current;
   }
 
+  /**
+   * Connect eagerly. The factory calls this at boot so a misconfigured URL is
+   * reported immediately rather than on the first request.
+   */
   async connect(): Promise<void> {
-    await this.client.connect();
+    await this.ensureConnected();
+  }
+
+  /**
+   * Connect on first use.
+   *
+   * `lazyConnect` plus `enableOfflineQueue: false` is a deliberate pairing —
+   * it is what makes commands fail fast during an outage instead of piling up
+   * in a buffer. But it also means a command issued before the handshake
+   * completes fails outright, so a driver constructed without an explicit
+   * connect() would silently answer every read as a miss and drop every write.
+   * That failure is invisible: the service still returns correct data, just
+   * with the cache doing nothing at all.
+   *
+   * Memoising one connect promise closes that hole without giving up
+   * fail-fast: exactly one handshake is ever in flight, and once the client is
+   * ready this is a single status check on the hot path.
+   */
+  private async ensureConnected(): Promise<void> {
+    if (this.client.status === 'ready') return;
+    this.connecting ??= this.client.connect().catch((err: unknown) => {
+      // Clear the memo so a later call can retry rather than replaying a
+      // rejected promise forever.
+      this.connecting = undefined;
+      throw err;
+    });
+    await this.connecting;
   }
 
   async get(key: string): Promise<string | null> {
@@ -158,6 +189,7 @@ export class RedisCache implements CacheDriver {
   async ping(): Promise<boolean> {
     if (this.closed) return false;
     try {
+      await this.ensureConnected();
       const pong = await this.client.ping();
       this.breaker.recordSuccess();
       return pong === 'PONG';
@@ -187,6 +219,7 @@ export class RedisCache implements CacheDriver {
   private async guardOptional<T>(op: () => Promise<T>, fallback: T): Promise<T> {
     if (this.closed || !this.breaker.canAttempt()) return fallback;
     try {
+      await this.ensureConnected();
       const result = await op();
       this.breaker.recordSuccess();
       return result;
@@ -209,6 +242,7 @@ export class RedisCache implements CacheDriver {
       throw AppError.unavailable('redis');
     }
     try {
+      await this.ensureConnected();
       const result = await op();
       this.breaker.recordSuccess();
       return result;
