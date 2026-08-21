@@ -1,0 +1,516 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Kestrel — a scalable URL shortener and rate-limited API gateway.">
+<title>Kestrel — URL Shortener</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* Design.md — full light palette on bare :root, dark redefined under both the
+   media query and the explicit attribute so a toggle wins in either direction. */
+:root {
+  --bg: #FAFAF9; --surface: #FFFFFF; --surface-2: #F4F4F2;
+  --border: #E4E4E1; --border-strong: #C9C9C4;
+  --text: #16181D; --text-dim: #5A6069; --text-faint: #8B929C;
+  --accent: #B87400; --accent-hover: #996100; --accent-dim: #FDF3E0;
+  --success: #1A7F37; --warning: #9A6700; --danger: #CF222E; --info: #0969DA;
+
+  --font-mono: "JetBrains Mono", "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 20px;
+  --sp-6: 24px; --sp-7: 32px; --sp-8: 40px; --sp-9: 48px;
+  --r-sm: 4px; --r-md: 8px;
+  --t-fast: 120ms; --t-base: 200ms;
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0B0D10; --surface: #12151A; --surface-2: #181C22;
+    --border: #242A33; --border-strong: #333B47;
+    --text: #E6EAF0; --text-dim: #9AA4B2; --text-faint: #5D6673;
+    --accent: #F5A524; --accent-hover: #FFB84D; --accent-dim: #4A3A17;
+    --success: #3FB950; --warning: #D29922; --danger: #F85149; --info: #58A6FF;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0B0D10; --surface: #12151A; --surface-2: #181C22;
+  --border: #242A33; --border-strong: #333B47;
+  --text: #E6EAF0; --text-dim: #9AA4B2; --text-faint: #5D6673;
+  --accent: #F5A524; --accent-hover: #FFB84D; --accent-dim: #4A3A17;
+  --success: #3FB950; --warning: #D29922; --danger: #F85149; --info: #58A6FF;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; min-height: 100vh;
+  background: var(--bg); color: var(--text);
+  font-family: var(--font-mono); font-size: 16px; line-height: 1.6;
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+.skip {
+  position: absolute; left: -9999px; top: 0; z-index: 10;
+  background: var(--accent); color: var(--bg); padding: var(--sp-3) var(--sp-5);
+  border-radius: var(--r-sm); font-size: 12.5px; text-transform: uppercase;
+  letter-spacing: 0.08em; text-decoration: none;
+}
+.skip:focus { left: var(--sp-4); top: var(--sp-4); }
+
+.wrap { max-width: 1100px; margin: 0 auto; padding: var(--sp-6); }
+
+header { display: flex; align-items: baseline; justify-content: space-between;
+         gap: var(--sp-4); flex-wrap: wrap; padding: var(--sp-7) 0 var(--sp-6); }
+.brand { font-size: 31px; font-weight: 700; letter-spacing: -0.02em; margin: 0; }
+.brand span { color: var(--accent); }
+.tagline { font-family: var(--font-sans); font-size: 14px; color: var(--text-dim);
+           margin: var(--sp-1) 0 0; max-width: 62ch; }
+.theme-toggle {
+  background: transparent; border: 1px solid var(--border); color: var(--text-dim);
+  border-radius: var(--r-sm); padding: 6px 12px; font-family: var(--font-mono);
+  font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.08em; cursor: pointer;
+  transition: border-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+.theme-toggle:hover { border-color: var(--border-strong); color: var(--text); }
+
+.grid { display: grid; gap: var(--sp-6); grid-template-columns: 1fr; }
+@media (min-width: 1024px) { .grid { grid-template-columns: 1fr 1fr; align-items: start; } }
+
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r-md); padding: var(--sp-6);
+}
+.card h2 {
+  font-size: 12.5px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--text-dim); margin: 0 0 var(--sp-5); padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--border);
+}
+
+label { display: block; font-size: 12.5px; font-weight: 500; text-transform: uppercase;
+        letter-spacing: 0.08em; color: var(--text-dim); margin-bottom: var(--sp-2); }
+.field { margin-bottom: var(--sp-5); }
+input {
+  width: 100%; background: var(--surface-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  padding: var(--sp-3) var(--sp-4); font-family: var(--font-mono); font-size: 14px;
+  transition: border-color var(--t-fast) var(--ease);
+}
+input::placeholder { color: var(--text-faint); }
+input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--border-strong); }
+.hint { font-family: var(--font-sans); font-size: 12.5px; color: var(--text-faint);
+        margin: var(--sp-2) 0 0; }
+.row { display: grid; gap: var(--sp-4); grid-template-columns: 1fr; }
+@media (min-width: 640px) { .row { grid-template-columns: 1fr 1fr; } }
+
+button.primary {
+  width: 100%; background: var(--accent); color: var(--bg); border: 0;
+  border-radius: var(--r-md); padding: var(--sp-3) var(--sp-5); min-height: 44px;
+  font-family: var(--font-mono); font-size: 14px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.05em; cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+}
+button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+button.primary:active:not(:disabled) { transform: translateY(1px); }
+button.primary:disabled { opacity: 0.4; cursor: not-allowed; }
+button.primary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.loading { animation: pulse 1.5s var(--ease) infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+.result {
+  margin-top: var(--sp-5); padding: var(--sp-5);
+  background: var(--surface-2); border: 1px solid var(--accent);
+  border-radius: var(--r-md); animation: rise var(--t-base) var(--ease);
+}
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.result.error { border-color: var(--danger); }
+.short-url {
+  display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap;
+  font-size: 20px; font-weight: 600; word-break: break-all;
+}
+.short-url a { color: var(--accent); text-decoration: none; }
+.short-url a:hover { text-decoration: underline; }
+.copy {
+  background: transparent; border: 1px solid var(--border-strong); color: var(--text-dim);
+  border-radius: var(--r-sm); padding: 6px 12px; min-height: 32px;
+  font-family: var(--font-mono); font-size: 12.5px; text-transform: uppercase;
+  letter-spacing: 0.08em; cursor: pointer;
+  transition: color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
+}
+.copy:hover { color: var(--text); border-color: var(--text-dim); }
+.copy:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.target { font-family: var(--font-sans); font-size: 12.5px; color: var(--text-dim);
+          margin: var(--sp-3) 0 0; word-break: break-all; }
+.meta { display: flex; gap: var(--sp-2); flex-wrap: wrap; margin-top: var(--sp-4); }
+
+.badge {
+  display: inline-block; font-size: 12.5px; font-weight: 500; text-transform: uppercase;
+  letter-spacing: 0.03em; border-radius: var(--r-sm); padding: 2px 8px;
+  border: 1px solid transparent;
+}
+.badge.ok      { color: var(--success); background: color-mix(in srgb, var(--success) 15%, transparent); }
+.badge.info    { color: var(--info);    background: color-mix(in srgb, var(--info) 15%, transparent); }
+.badge.warn    { color: var(--warning); background: color-mix(in srgb, var(--warning) 15%, transparent); }
+.badge.danger  { color: var(--danger);  background: color-mix(in srgb, var(--danger) 15%, transparent); }
+.badge.neutral { color: var(--text-dim); background: var(--surface); border-color: var(--border); }
+
+.tiles { display: grid; gap: var(--sp-4); grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (min-width: 640px) { .tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.tile { background: var(--surface-2); border: 1px solid var(--border);
+        border-radius: var(--r-sm); padding: var(--sp-4); }
+.tile .label { font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.08em;
+               color: var(--text-dim); }
+.tile .value { font-size: 25px; font-weight: 600; margin-top: var(--sp-1); }
+
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.scroll { overflow-x: auto; }
+th { text-align: left; font-size: 12.5px; font-weight: 500; text-transform: uppercase;
+     letter-spacing: 0.08em; color: var(--text-dim); padding: var(--sp-2) var(--sp-3);
+     border-bottom: 1px solid var(--border); white-space: nowrap; }
+td { padding: var(--sp-3); border-bottom: 1px solid var(--border); line-height: 1.4; }
+tbody tr:nth-child(even) { background: var(--surface-2); }
+td a { color: var(--accent); text-decoration: none; }
+td a:hover { text-decoration: underline; }
+.trunc { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+         display: block; color: var(--text-dim); font-family: var(--font-sans); font-size: 12.5px; }
+.empty { color: var(--text-faint); font-family: var(--font-sans); font-size: 14px;
+         padding: var(--sp-6) 0; text-align: center; }
+
+.bars { display: flex; flex-direction: column; gap: var(--sp-2); }
+.bar-row { display: grid; grid-template-columns: 64px 1fr 56px; gap: var(--sp-3); align-items: center;
+           font-size: 12.5px; }
+.bar-track { height: 8px; background: var(--surface-2); border-radius: var(--r-sm); overflow: hidden; }
+.bar-fill { height: 100%; background: var(--accent); border-radius: var(--r-sm);
+            transition: width var(--t-base) var(--ease); }
+
+footer { margin: var(--sp-9) 0 var(--sp-7); padding-top: var(--sp-5);
+         border-top: 1px solid var(--border);
+         font-family: var(--font-sans); font-size: 12.5px; color: var(--text-faint); }
+footer code { font-family: var(--font-mono); color: var(--text-dim); }
+
+.toast {
+  position: fixed; right: var(--sp-6); bottom: var(--sp-6); z-index: 20;
+  background: var(--surface); border: 1px solid var(--border);
+  border-left: 3px solid var(--success); border-radius: var(--r-sm);
+  padding: var(--sp-3) var(--sp-4); font-size: 14px; max-width: 320px;
+  animation: rise var(--t-base) var(--ease);
+}
+.toast.error { border-left-color: var(--danger); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<div class="wrap">
+  <header>
+    <div>
+      <h1 class="brand">kes<span>trel</span></h1>
+      <p class="tagline">A scalable URL shortener and rate-limited API gateway. Redis cache-aside,
+        distributed rate limiting, hash-sharded storage.</p>
+    </div>
+    <button class="theme-toggle" id="theme" type="button" aria-label="Toggle colour theme">Theme</button>
+  </header>
+
+  <main id="main">
+    <div class="grid">
+      <section class="card">
+        <h2>Create a link</h2>
+        <form id="form" novalidate>
+          <div class="field">
+            <label for="url">Destination URL</label>
+            <input id="url" name="url" type="url" inputmode="url" required
+                   placeholder="https://example.com/a/very/long/path" autocomplete="off">
+          </div>
+          <div class="row">
+            <div class="field">
+              <label for="alias">Custom alias</label>
+              <input id="alias" name="alias" type="text" placeholder="optional"
+                     pattern="[A-Za-z0-9_-]{3,32}" autocomplete="off">
+              <p class="hint">3–32 chars: letters, digits, - and _</p>
+            </div>
+            <div class="field">
+              <label for="expires">Expires in (seconds)</label>
+              <input id="expires" name="expires" type="number" min="1" placeholder="never"
+                     inputmode="numeric" autocomplete="off">
+              <p class="hint">Leave blank for a permanent link</p>
+            </div>
+          </div>
+          <button class="primary" id="submit" type="submit">Shorten</button>
+        </form>
+        <div id="result" aria-live="polite"></div>
+      </section>
+
+      <section class="card">
+        <h2>Live stats</h2>
+        <div class="tiles">
+          <div class="tile"><div class="label">Links</div><div class="value" id="stat-links">—</div></div>
+          <div class="tile"><div class="label">Clicks</div><div class="value" id="stat-clicks">—</div></div>
+          <div class="tile"><div class="label">Cache hit</div><div class="value" id="stat-hit">—</div></div>
+          <div class="tile"><div class="label">Shards</div><div class="value" id="stat-shards">—</div></div>
+        </div>
+        <h2 style="margin-top:var(--sp-7)">Shard distribution</h2>
+        <div class="bars" id="shards"><p class="empty">Loading…</p></div>
+      </section>
+    </div>
+
+    <section class="card" style="margin-top:var(--sp-6)">
+      <h2>Recent links</h2>
+      <div class="scroll">
+        <table>
+          <thead>
+            <tr><th>Code</th><th>Destination</th><th>Clicks</th><th>Shard</th><th>Created</th><th></th></tr>
+          </thead>
+          <tbody id="links"><tr><td colspan="6"><p class="empty">Loading…</p></td></tr></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <p>API: <code>POST /api/links</code> · <code>GET /api/links/:code</code> ·
+       <code>DELETE /api/links/:code</code> · <code>GET /:code</code> ·
+       <code>/health</code> · <code>/ready</code> · <code>/metrics</code></p>
+  </footer>
+</div>
+
+<script>
+'use strict';
+
+const $ = (id) => document.getElementById(id);
+
+/* Theme: an explicit choice stamps data-theme; the default is the OS setting.
+   localStorage can throw in a private window, so every access is guarded. */
+(function initTheme() {
+  let saved = null;
+  try { saved = localStorage.getItem('kestrel-theme'); } catch { /* storage unavailable */ }
+  if (saved === 'dark' || saved === 'light') document.documentElement.dataset.theme = saved;
+
+  $('theme').addEventListener('click', () => {
+    const isDark = document.documentElement.dataset.theme
+      ? document.documentElement.dataset.theme === 'dark'
+      : window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const next = isDark ? 'light' : 'dark';
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem('kestrel-theme', next); } catch { /* ignore */ }
+  });
+})();
+
+function toast(message, isError) {
+  const el = document.createElement('div');
+  el.className = 'toast' + (isError ? ' error' : '');
+  el.setAttribute('role', 'status');
+  el.textContent = message;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 3000);
+}
+
+function timeAgo(iso) {
+  const seconds = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (seconds < 60) return Math.floor(seconds) + 's ago';
+  if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago';
+  if (seconds < 86400) return Math.floor(seconds / 3600) + 'h ago';
+  return Math.floor(seconds / 86400) + 'd ago';
+}
+
+/* Mirrors src/core/hash.ts so the UI can label a row's shard without an extra
+   round trip. Must stay in step with the server's router. */
+function fnv1a32(input) {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+}
+
+let shardCount = 4;
+
+$('form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+
+  const button = $('submit');
+  const url = $('url').value.trim();
+  const alias = $('alias').value.trim();
+  const expires = $('expires').value.trim();
+
+  if (!url) { toast('Destination URL is required.', true); $('url').focus(); return; }
+
+  const payload = { url };
+  if (alias) payload.alias = alias;
+  if (expires) payload.expiresIn = Number(expires);
+
+  button.disabled = true;
+  button.classList.add('loading');
+  button.textContent = 'Shortening…';
+  const started = performance.now();
+
+  try {
+    const response = await fetch('/api/links', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const elapsed = Math.round(performance.now() - started);
+    const body = await response.json();
+
+    if (!response.ok) {
+      const retry = response.headers.get('Retry-After');
+      const message = response.status === 429 && retry
+        ? 'Rate limited. ' + retry + 's until reset.'
+        : (body.error && body.error.message) || 'Create failed.';
+      renderError(response.status, message);
+      return;
+    }
+
+    renderResult(body, elapsed);
+    $('url').value = '';
+    $('alias').value = '';
+    $('expires').value = '';
+    refresh();
+  } catch (err) {
+    renderError('ERR', 'Network error. The service may be unreachable.');
+  } finally {
+    button.disabled = false;
+    button.classList.remove('loading');
+    button.textContent = 'Shorten';
+  }
+});
+
+function renderResult(link, elapsed) {
+  const shard = fnv1a32(link.code) % shardCount;
+  $('result').innerHTML =
+    '<div class="result">' +
+      '<div class="short-url">' +
+        '<a href="' + escapeAttr(link.shortUrl) + '" target="_blank" rel="noopener">' +
+          escapeHtml(link.shortUrl) +
+        '</a>' +
+        '<button class="copy" type="button" data-copy="' + escapeAttr(link.shortUrl) + '">Copy</button>' +
+      '</div>' +
+      '<p class="target">' + escapeHtml(link.url) + '</p>' +
+      '<div class="meta">' +
+        '<span class="badge ok">201 created</span>' +
+        '<span class="badge info">' + elapsed + ' ms</span>' +
+        '<span class="badge neutral">shard ' + shard + '</span>' +
+        (link.expiresAt ? '<span class="badge warn">expires</span>' : '') +
+      '</div>' +
+    '</div>';
+
+  const copyButton = $('result').querySelector('.copy');
+  copyButton.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(copyButton.dataset.copy);
+      toast('Copied to clipboard.');
+    } catch {
+      toast('Copy failed — select the link and copy manually.', true);
+    }
+  });
+}
+
+function renderError(status, message) {
+  $('result').innerHTML =
+    '<div class="result error">' +
+      '<div class="meta"><span class="badge danger">' + escapeHtml(String(status)) + '</span></div>' +
+      '<p class="target" style="margin-top:var(--sp-3)">' + escapeHtml(message) + '</p>' +
+    '</div>';
+}
+
+async function refresh() {
+  try {
+    const [linksResponse, shardsResponse] = await Promise.all([
+      fetch('/api/links?limit=15'),
+      fetch('/api/shards'),
+    ]);
+    if (!linksResponse.ok || !shardsResponse.ok) return;
+
+    const { items } = await linksResponse.json();
+    const shards = await shardsResponse.json();
+    shardCount = shards.shardCount;
+
+    $('stat-links').textContent = shards.total;
+    $('stat-clicks').textContent = items.reduce((sum, l) => sum + l.clicks, 0);
+    $('stat-shards').textContent = shards.shardCount;
+
+    const bars = shards.shards.map((s) =>
+      '<div class="bar-row">' +
+        '<span>shard ' + s.shard + '</span>' +
+        '<span class="bar-track"><span class="bar-fill" style="width:' +
+          (s.share || 0) + '%"></span></span>' +
+        '<span>' + (s.share || 0) + '%</span>' +
+      '</div>').join('');
+    $('shards').innerHTML = bars || '<p class="empty">No links yet</p>';
+
+    $('links').innerHTML = items.length === 0
+      ? '<tr><td colspan="6"><p class="empty">No links yet — create one above.</p></td></tr>'
+      : items.map((l) =>
+          '<tr>' +
+            '<td><a href="/' + escapeAttr(l.code) + '" target="_blank" rel="noopener">' +
+              escapeHtml(l.code) + '</a></td>' +
+            '<td><span class="trunc" title="' + escapeAttr(l.url) + '">' +
+              escapeHtml(l.url) + '</span></td>' +
+            '<td>' + l.clicks + '</td>' +
+            '<td>' + (fnv1a32(l.code) % shardCount) + '</td>' +
+            '<td>' + escapeHtml(timeAgo(l.createdAt)) + '</td>' +
+            '<td><button class="copy" type="button" data-delete="' + escapeAttr(l.code) +
+              '">Delete</button></td>' +
+          '</tr>').join('');
+
+    for (const button of $('links').querySelectorAll('[data-delete]')) {
+      button.addEventListener('click', async () => {
+        const response = await fetch('/api/links/' + encodeURIComponent(button.dataset.delete), {
+          method: 'DELETE',
+        });
+        toast(response.ok ? 'Link deleted.' : 'Delete failed.', !response.ok);
+        refresh();
+      });
+    }
+  } catch { /* a background refresh failure must not disrupt the page */ }
+}
+
+async function refreshCacheStat() {
+  try {
+    const response = await fetch('/metrics');
+    if (!response.ok) return;
+    const text = await response.text();
+
+    /* Cache effectiveness = the share of redirects served without a database
+       lookup. Summing per-tier hits and misses would double-count: one request
+       that misses L1 and then hits L2 records both, which reads as 50% even
+       though the database was never touched. */
+    let redirects = 0;
+    let lookups = 0;
+    for (const line of text.split('\n')) {
+      const value = Number(line.slice(line.lastIndexOf(' ') + 1));
+      if (!Number.isFinite(value)) continue;
+      if (line.startsWith('kestrel_redirects_total') && line.includes('outcome="ok"')) {
+        redirects += value;
+      } else if (line.startsWith('kestrel_shard_queries_total') &&
+                 line.includes('operation="findByCode"')) {
+        lookups += value;
+      }
+    }
+    $('stat-hit').textContent = redirects === 0
+      ? '—'
+      : Math.max(0, Math.round(((redirects - lookups) / redirects) * 100)) + '%';
+  } catch { /* ignore */ }
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+function escapeAttr(value) {
+  return escapeHtml(value).replace(/"/g, '&quot;');
+}
+
+refresh();
+refreshCacheStat();
+setInterval(() => { refresh(); refreshCacheStat(); }, 10000);
+</script>
+</body>
+</html>
