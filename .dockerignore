@@ -1,0 +1,51 @@
+# Build context hygiene.
+#
+# Without this, `docker build` uploads node_modules and dist into the daemon on
+# every build — hundreds of megabytes of files the image then rebuilds from
+# scratch anyway, since the Dockerfile installs its own dependencies and
+# compiles its own output.
+
+# Dependencies and build output — the image produces both itself.
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Secrets must never enter a build context; a layer keeps them even if a later
+# step deletes the file.
+.env
+.env.*
+!.env.example
+
+# Version control and CI
+.git/
+.gitignore
+.gitattributes
+.github/
+
+# Tests, benchmarks, and tooling — not needed to build or run the image.
+tests/
+bench/
+scripts/
+vitest.config.ts
+vitest.integration.config.ts
+coverage/
+*.lcov
+
+# Documentation
+*.md
+LICENSE
+
+# Container and orchestration files — never part of their own build context.
+Dockerfile
+.dockerignore
+docker-compose.yml
+nginx/
+
+# Editor and OS cruft
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
