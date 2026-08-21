@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The portability guarantee (NFR-7): the suite must pass with nothing installed.
+  test:
+    name: Typecheck and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test with coverage
+        run: npm run test:coverage
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/
+          retention-days: 7
+
+  # The same driver contract suites, this time against real Redis and Postgres.
+  # If these diverge from the in-process run, the fallback has drifted.
+  integration:
+    name: Driver contracts against Redis and Postgres
+    runs-on: ubuntu-latest
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+      postgres:
+        image: postgres:16-alpine
+        ports: ['5432:5432']
+        env:
+          POSTGRES_USER: kestrel
+          POSTGRES_PASSWORD: kestrel
+          POSTGRES_DB: kestrel
+        options: >-
+          --health-cmd "pg_isready -U kestrel -d kestrel"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      REDIS_URL: redis://127.0.0.1:6379
+      DATABASE_URL: postgres://kestrel:kestrel@127.0.0.1:5432/kestrel
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Provision shard schema
+        run: npm run migrate
+        env:
+          SHARD_COUNT: '4'
+
+      - name: Integration suite
+        run: npm run test:integration
+
+  build:
+    name: Build and smoke-test the image
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: kestrel:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Proves the image boots, serves, and shortens — not merely that it compiles.
+      - name: Smoke test
+        run: |
+          docker run -d --name kestrel-smoke -p 3000:3000 kestrel:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:3000/health > /dev/null 2>&1; then break; fi
+            sleep 1
+          done
+
+          echo "--- health ---"
+          curl -fsS http://localhost:3000/health
+
+          echo "--- create ---"
+          CODE=$(curl -fsS -X POST http://localhost:3000/api/links \
+            -H 'content-type: application/json' \
+            -d '{"url":"https://example.com/ci"}' | jq -r .code)
+          echo "code=$CODE"
+
+          echo "--- redirect ---"
+          LOCATION=$(curl -fsS -o /dev/null -w '%{redirect_url}' "http://localhost:3000/$CODE")
+          test "$LOCATION" = "https://example.com/ci" || {
+            echo "expected https://example.com/ci, got $LOCATION"; exit 1; }
+
+          echo "--- metrics ---"
+          curl -fsS http://localhost:3000/metrics | grep -q kestrel_http_requests_total
+
+          echo "Smoke test passed."
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs kestrel-smoke || true
+
+      - name: Clean up
+        if: always()
+        run: docker rm -f kestrel-smoke || true
