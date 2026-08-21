@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Test + coverage output
+coverage/
+.vitest/
+*.lcov
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Benchmark output
+bench/results/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local data volumes
+data/

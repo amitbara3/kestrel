@@ -1,0 +1,12 @@
+# Normalise to LF in the repository; check out native on Windows.
+* text=auto eol=lf
+
+# Shell scripts and Docker files must keep LF even on a Windows checkout,
+# or they break inside a Linux container.
+*.sh      text eol=lf
+*.mjs     text eol=lf
+Dockerfile text eol=lf
+*.conf    text eol=lf
+
+# Never diff or merge the lockfile by hand.
+package-lock.json -diff linguist-generated=true
