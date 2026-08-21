@@ -1,0 +1,144 @@
+# The full topology: load balancer, three stateless app replicas, Redis, Postgres.
+#
+#   docker compose up --build
+#   open http://localhost:8080
+#
+# The three replicas are separate services rather than `deploy.replicas` for one
+# reason: each needs a distinct NODE_ID so their Snowflake generators cannot mint
+# colliding IDs, and replicas cannot be given distinct environments.
+
+name: kestrel
+
+x-app: &app-base
+  build:
+    context: .
+    dockerfile: Dockerfile
+  restart: unless-stopped
+  environment: &app-env
+    NODE_ENV: production
+    PORT: "3000"
+    HOST: 0.0.0.0
+    LOG_LEVEL: info
+    # Links are handed out pointing at the balancer, not at a replica.
+    BASE_URL: http://localhost:8080
+    REDIS_URL: redis://redis:6379
+    DATABASE_URL: postgres://kestrel:kestrel@postgres:5432/kestrel
+    SHARD_COUNT: "4"
+    PG_POOL_MAX: "10"
+    CACHE_TTL_SECONDS: "3600"
+    NEGATIVE_CACHE_TTL_SECONDS: "60"
+    L1_MAX_ENTRIES: "10000"
+    L1_TTL_SECONDS: "30"
+    RATE_LIMIT_ENABLED: "true"
+    RATE_LIMIT_WRITE_MAX: "20"
+    RATE_LIMIT_READ_MAX: "120"
+    RATE_LIMIT_REDIRECT_CAPACITY: "200"
+    RATE_LIMIT_REDIRECT_REFILL_PER_SEC: "50"
+    # The compose network; only from inside it is X-Forwarded-For believed.
+    TRUSTED_PROXIES: 127.0.0.1/32,::1/128,172.16.0.0/12,10.0.0.0/8,192.168.0.0/16
+  depends_on:
+    redis:
+      condition: service_healthy
+    postgres:
+      condition: service_healthy
+  # Nothing is written to disk; the image can be immutable.
+  read_only: true
+  tmpfs:
+    - /tmp
+  security_opt:
+    - no-new-privileges:true
+  networks: [kestrel]
+
+services:
+  app1:
+    <<: *app-base
+    container_name: kestrel-app1
+    environment:
+      <<: *app-env
+      NODE_ID: "1"
+
+  app2:
+    <<: *app-base
+    container_name: kestrel-app2
+    environment:
+      <<: *app-env
+      NODE_ID: "2"
+
+  app3:
+    <<: *app-base
+    container_name: kestrel-app3
+    environment:
+      <<: *app-env
+      NODE_ID: "3"
+
+  lb:
+    image: nginx:1.27-alpine
+    container_name: kestrel-lb
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      app1:
+        condition: service_healthy
+      app2:
+        condition: service_healthy
+      app3:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1/lb-health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks: [kestrel]
+
+  redis:
+    image: redis:7-alpine
+    container_name: kestrel-redis
+    restart: unless-stopped
+    # allkeys-lru is the backstop for rate-limiter key growth: every limiter key
+    # already carries a TTL, and this bounds the damage if one ever does not.
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --appendonly no
+      --save ""
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks: [kestrel]
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: kestrel-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: kestrel
+      POSTGRES_PASSWORD: kestrel
+      POSTGRES_DB: kestrel
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Runs once on an empty data directory. The app also creates the schema
+      # idempotently at boot, so this is provisioning, not a hard requirement.
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kestrel -d kestrel"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [kestrel]
+
+volumes:
+  pgdata:
+
+networks:
+  kestrel:
+    driver: bridge
