@@ -1,0 +1,24 @@
+# Benchmark overlay — rate limiting off.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.bench.yml up -d
+#   docker compose down && docker compose up -d        # back to normal
+#
+# Why this exists as a separate file rather than a tweak to the base config:
+# with limits on you measure the limiter, not the system. The redirect tier
+# allows a 200 burst and 50/s sustained per replica, so a throughput run would
+# flatline at ~150 req/s across three replicas and report nothing useful about
+# the cache or the shards.
+#
+# It is an overlay, not an edit, so the committed default stays the safe one —
+# nobody can accidentally deploy a build with limiting disabled.
+
+services:
+  app1:
+    environment:
+      RATE_LIMIT_ENABLED: "false"
+  app2:
+    environment:
+      RATE_LIMIT_ENABLED: "false"
+  app3:
+    environment:
+      RATE_LIMIT_ENABLED: "false"

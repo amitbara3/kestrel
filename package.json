@@ -16,7 +16,8 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "typecheck": "tsc --noEmit",
     "bench": "node bench/loadtest.mjs",
-    "migrate": "node scripts/migrate.mjs"
+    "migrate": "node scripts/migrate.mjs",
+    "verify": "node bench/verify-cluster.mjs"
   },
   "keywords": [
     "url-shortener",
