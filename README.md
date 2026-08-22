@@ -22,7 +22,8 @@ It exists to make the standard system-design answers **runnable and measurable**
 ## Quickstart
 
 ```bash
-git clone <your-repo-url> kestrel && cd kestrel
+git clone https://github.com/amitbara3/distributed-url-shortener.git
+cd distributed-url-shortener
 npm install
 npm run dev
 ```

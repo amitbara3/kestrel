@@ -31,7 +31,14 @@ npm run bench               # load test, prints PASS/FAIL against the NFR target
 | `npm run verify -- --chaos` | **20 passed, 0 failed** against the live cluster |
 | `npm run bench` (cluster) | 14,408 req/s · 0 DB lookups of 288,142 · p99 1 ms server-side |
 
-Repository: <https://github.com/amitbara3/kestrel>
+Repository: <https://github.com/amitbara3/distributed-url-shortener>
+
+The repo was renamed from `kestrel` on 2026-08-22 so it reads as what it is on a
+CV. **`Kestrel` remains the service's internal name** and should stay that way:
+the metric namespace (`kestrel_*`), the Redis key prefix (`kestrel:`), and the
+compose project and container names all use it, so renaming those would orphan
+cache keys on deploy and break any dashboard built on the metrics. GitHub
+permanently redirects the old URL.
 
 ## Environment (2026-08-22)
 
